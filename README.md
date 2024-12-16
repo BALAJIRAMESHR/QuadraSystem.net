@@ -1,0 +1,2 @@
+# QuadraSystem.net
+Translator 
