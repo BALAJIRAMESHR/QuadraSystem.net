@@ -1,21 +1,55 @@
 import streamlit as st
-import io
+import speech_recognition as sr
 from translator import GeminiTranslator, LANGUAGES, LANGUAGE_CODES
-from pdf_processor import extract_pdf_text
+import tempfile
 import docx
-import PyPDF2
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+import os
+from PIL import Image
+import pytesseract
+from moviepy import VideoFileClip
+from moviepy import TextClip, CompositeVideoClip
+import io
+from pdf_processor import (
+    extract_pdf_text,
+)  # Assuming extract_pdf_text is a function to extract text from PDFs
+
+# Ensure session state is initialized
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+if "chat_name" not in st.session_state:
+    st.session_state["chat_name"] = "DefaultChat"  # Default name
 
 # Initialize translator
 translator = GeminiTranslator()
 
 # Streamlit UI Setup
-st.set_page_config(page_title="Live Translator", page_icon="🌐")
-st.title("🌐 Live Translator")
+st.set_page_config(page_title="Quadra Translator", page_icon="🌐")
+st.title("🌐 Quadra Translator ")
 st.subheader("Instant translation with language detection and file download")
+
+
+# Speech Recognition Function
+def recognize_speech_from_microphone():
+    recognizer = sr.Recognizer()
+    microphone = sr.Microphone()
+
+    with microphone as source:
+        st.info("Listening... Please speak.")
+        recognizer.adjust_for_ambient_noise(source)  # Adjust to ambient noise levels
+        audio = recognizer.listen(source)
+        try:
+            st.info("Recognizing speech...")
+            text = recognizer.recognize_google(audio)  # Use Google Speech Recognition
+            st.success(f"Recognized Speech: {text}")
+            return text
+        except sr.UnknownValueError:
+            st.error("Google Speech Recognition could not understand the audio.")
+            return None
+        except sr.RequestError:
+            st.error(
+                "Could not request results from Google Speech Recognition service."
+            )
+            return None
 
 
 # Function to extract text from various file types
@@ -30,21 +64,64 @@ def extract_text_from_file(uploaded_file):
         return "\n".join([para.text for para in doc.paragraphs if para.text])
     elif uploaded_file.type == "text/plain":
         return uploaded_file.getvalue().decode("utf-8")
+    elif uploaded_file.type.startswith("image"):
+        return extract_text_from_image(uploaded_file)
+    elif uploaded_file.type.startswith("video"):
+        return extract_audio_and_transcribe(uploaded_file)
     else:
         st.error("Unsupported file type")
         return None
 
 
+# Function to extract text from images using pytesseract
+def extract_text_from_image(image_file):
+    try:
+        # Open image file using PIL
+        image = Image.open(image_file)
+        # Use pytesseract to extract text from the image
+        extracted_text = pytesseract.image_to_string(image)
+        if extracted_text.strip():  # If any text was extracted
+            return extracted_text
+        else:
+            st.error("No text found in the image.")
+            return None
+    except Exception as e:
+        st.error(f"Error extracting text from image: {e}")
+        return None
+
+
+# Function to extract audio from video and transcribe it
+def extract_audio_and_transcribe(video_file):
+    try:
+        # Save the uploaded video to a temporary file
+        temp_video_path = tempfile.mktemp(suffix=".mp4")
+        with open(temp_video_path, "wb") as temp_video:
+            temp_video.write(video_file.getvalue())
+
+        # Ensure video clip is opened and processed safely
+        with VideoFileClip(temp_video_path) as video_clip:
+            # Extract audio from video
+            audio_path = tempfile.mktemp(suffix=".wav")
+            video_clip.audio.write_audiofile(audio_path)
+
+        # Use Speech Recognition to transcribe the audio
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(audio_path) as source:
+            audio_data = recognizer.record(source)
+            text = recognizer.recognize_google(audio_data)
+
+        # Clean up temporary files
+        os.remove(temp_video_path)
+        os.remove(audio_path)
+
+        return text
+    except Exception as e:
+        print(f"Error extracting or transcribing audio: {e}")
+        return None
+
+
 # Function to create translated file for download
 def create_translated_file(original_file, translated_text, original_type):
-    """
-    Create a translated file based on the original file type
-
-    :param original_file: Original uploaded file
-    :param translated_text: Translated text content
-    :param original_type: Type of the original file
-    :return: Bytes-like object of the translated file
-    """
     if original_type == "application/pdf":
         # Create PDF with translated text
         packet = io.BytesIO()
@@ -92,37 +169,12 @@ def create_translated_file(original_file, translated_text, original_type):
         return None
 
 
-# Initialize session state for messages
-if "messages" not in st.session_state:
-    st.session_state["messages"] = []
-if "chat_name" not in st.session_state:
-    st.session_state["chat_name"] = "DefaultChat"
-
 # Main translation interface (Upper chat messages, bottom input)
 col1, col2 = st.columns(2)
 
 with col1:
     # Display current chat name at the top of the page
     st.markdown(f"### Current Chat: {st.session_state['chat_name']}")
-
-    # Custom CSS for file upload icon
-    st.markdown(
-        """
-    <style>
-    .file-upload-icon {
-        position: absolute;
-        right: 10px;
-        top: 10px;
-        cursor: pointer;
-        z-index: 10;
-    }
-    .stTextArea > div > div > textarea {
-        padding-right: 40px;
-    }
-    </style>
-    """,
-        unsafe_allow_html=True,
-    )
 
     # Source language detection and display
     source_text = st.text_area(
@@ -132,9 +184,17 @@ with col1:
         label_visibility="collapsed",
     )
 
+    # Speech-to-Text button
+    if st.button("Start Speech-to-Text Translation"):
+        recognized_text = recognize_speech_from_microphone()
+        if recognized_text:
+            source_text = recognized_text
+
     # File upload with improved functionality
     uploaded_file = st.file_uploader(
-        "Upload File", type=["txt", "pdf", "docx"], label_visibility="collapsed"
+        "Upload File",
+        type=["txt", "pdf", "docx", "mp4", "mov", "jpg", "jpeg", "png"],
+        label_visibility="collapsed",
     )
 
     # Process uploaded file
@@ -235,18 +295,3 @@ if st.session_state["messages"]:
             f"<div style='display: flex; justify-content: flex-end;'><div style='background-color: #4CAF50; color: white; border-radius: 10px; padding: 10px; max-width: 60%; font-size: 14px;'>{msg['translation']} ({msg['target_language']})</div></div>",
             unsafe_allow_html=True,
         )
-
-# Fixed bottom input box (adjusting space and position)
-st.markdown(
-    """
-    <style>
-        .stTextInput>div>div>input {
-            position: fixed;
-            bottom: 80px;
-            width: 100%;
-            margin-top: 20px;
-        }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
